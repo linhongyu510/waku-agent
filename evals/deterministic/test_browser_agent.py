@@ -69,3 +69,57 @@ def test_a_failed_rebuild_keeps_the_working_agent(isolated, monkeypatch):
     assert error and "no API key" in error
     assert browser_agent.current() is first, "a failed swap must not orphan the user"
     assert first.session.session_id, "and the surviving agent keeps its thread"
+
+
+def test_rebuild_restores_the_conversation_history(isolated):
+    """Issue #247: rebuild swapped the BRAIN but not the MEMORY. session_id was
+    carried over, yet Session.history stayed empty, so after a Settings save
+    the model started with an empty context while the dock still showed the
+    conversation ("I need the event details first" about an event it had just
+    created). A settings change must reload the thread's history, exactly like
+    switching back to a past conversation does."""
+    first = browser_agent.get_agent()
+    sid = first.session.session_id
+    assert sid != "default"
+
+    first.session.add_exchange(
+        "add a food festival on Oct 1 from 2 to 3 PM",
+        "Saved to .waku/calendar.ics (not synced to Apple Calendar)",
+        source="dashboard",
+    )
+    assert len(first.session.history) == 2
+
+    assert browser_agent.rebuild() is None          # None == success
+    after = browser_agent.current()
+
+    assert after is not first
+    assert after.session.session_id == sid, "rebuild dropped the chat thread"
+    assert [m["content"] for m in after.session.history] == [
+        "add a food festival on Oct 1 from 2 to 3 PM",
+        "Saved to .waku/calendar.ics (not synced to Apple Calendar)",
+    ], (
+        "rebuild left Session.history empty — the model would answer with no "
+        "memory of the conversation even though the dock still shows it (#247)"
+    )
+
+
+def test_get_agent_restores_history_on_restart(isolated):
+    """Issue #247 (restart leg): a fresh process resumes the same dashboard
+    thread, so Session.history must be reloaded from chat_log — not left empty
+    on the brand-new Session."""
+    first = browser_agent.get_agent()
+    sid = first.session.session_id
+    first.session.add_exchange("remember my wifi password is velociraptor",
+                               "Got it — saved a note.", source="dashboard")
+
+    # simulate a server restart: brand-new process globals
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(browser_agent, "_agent", None)
+    monkeypatch.setattr(browser_agent, "_dashboard_session", None)
+
+    restarted = browser_agent.get_agent()
+    assert restarted.session.session_id == sid
+    assert [m["content"] for m in restarted.session.history] == [
+        "remember my wifi password is velociraptor",
+        "Got it — saved a note.",
+    ]

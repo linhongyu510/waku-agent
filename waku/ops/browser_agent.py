@@ -93,7 +93,11 @@ def get_agent():
         # keeps the chat on screen), or starts fresh if that thread is idle.
         # Same id collect() reports, so the dock restores the right conversation.
         _dashboard_session = resume_or_new_session(conn)
-        _agent.session.session_id = _dashboard_session
+        # switch(), not a bare assignment: resuming a thread must also reload
+        # its history into working memory. Assigning session_id only made the
+        # dock look right — the model still started with an empty context after
+        # a restart (#247).
+        _agent.session.switch(_dashboard_session)
     return _agent
 
 
@@ -149,9 +153,14 @@ def rebuild() -> str | None:
             # 'default' session, so without this line switching provider silently
             # dumped you into a different chat and your history vanished from the
             # dock. Same resolution get_agent() uses, so both doors agree.
-            fresh.session.session_id = (
+            # switch() also reloads the thread's history from chat_log: carrying
+            # only session_id left Session.history empty, so after a Settings
+            # save the model answered with no memory of the conversation while
+            # the dock still showed it (#247).
+            resumed = (
                 old.session.session_id if old is not None else resume_or_new_session(conn)
             )
+            fresh.session.switch(resumed)
             _dashboard_session = fresh.session.session_id
             _agent = fresh
         except (Exception, SystemExit) as exc:   # get_client raises SystemExit
